@@ -1,0 +1,5 @@
+const router=require('express').Router();const db=require('../db');const {adminAuth}=require('../middleware/auth');
+router.get('/public',async(req,res)=>{const {rows}=await db.query("SELECT key,value FROM site_settings WHERE key IN ('usd_try_rate','trx_usd_rate','payment_address','theme')");const o=Object.fromEntries(rows.map(x=>[x.key,x.value]));res.json({settings:o});});
+router.get('/admin',adminAuth,async(req,res)=>{const {rows}=await db.query('SELECT key,value FROM site_settings ORDER BY key');res.json({settings:Object.fromEntries(rows.map(x=>[x.key,x.value]))});});
+router.put('/admin',adminAuth,async(req,res)=>{const allowed=['usd_try_rate','trx_usd_rate','payment_address','theme','payment_expiry_minutes','store_name','store_tagline'];for(const [k,v] of Object.entries(req.body||{})){if(!allowed.includes(k))continue;await db.query(`INSERT INTO site_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`,[k,String(v).trim()]);}res.json({ok:true});});
+module.exports=router;
