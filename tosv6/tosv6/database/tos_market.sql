@@ -6,6 +6,7 @@ ON CONFLICT(key) DO NOTHING;
 CREATE TABLE IF NOT EXISTS users (
  id BIGSERIAL PRIMARY KEY,
  nickname VARCHAR(24) NOT NULL UNIQUE,
+ email VARCHAR(255),
  password_hash TEXT NOT NULL,
  display_name VARCHAR(60) NOT NULL,
  bio VARCHAR(500) NOT NULL DEFAULT '',
@@ -14,6 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx ON users(LOWER(email)) WHERE email IS NOT NULL;
 CREATE INDEX IF NOT EXISTS users_nickname_idx ON users(nickname);
 
 CREATE TABLE IF NOT EXISTS products (
@@ -70,8 +73,12 @@ CREATE INDEX IF NOT EXISTS payment_notifications_status_idx ON payment_notificat
 CREATE TABLE IF NOT EXISTS messages (
  id BIGSERIAL PRIMARY KEY, customer_name VARCHAR(120) NOT NULL DEFAULT 'Guest Buyer', customer_email VARCHAR(255), subject VARCHAR(255) NOT NULL,
  body TEXT NOT NULL, direction VARCHAR(20) NOT NULL DEFAULT 'inbound' CHECK(direction IN ('inbound','outbound')), thread_id BIGINT, guest_token VARCHAR(64),
+ attachment_data BYTEA, attachment_mime VARCHAR(100), attachment_name VARCHAR(255),
  is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data BYTEA;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_mime VARCHAR(100);
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255);
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS guest_token VARCHAR(64); ALTER TABLE messages ALTER COLUMN customer_email DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS messages_created_at_idx ON messages(created_at DESC); CREATE INDEX IF NOT EXISTS messages_thread_id_idx ON messages(thread_id); CREATE INDEX IF NOT EXISTS messages_guest_token_idx ON messages(guest_token);
 
