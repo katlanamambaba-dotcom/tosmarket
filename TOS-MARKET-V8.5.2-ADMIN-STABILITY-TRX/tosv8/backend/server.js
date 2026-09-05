@@ -1,9 +1,0 @@
-const express=require('express');const cookieParser=require('cookie-parser');const path=require('path');const dotenv=require('dotenv');dotenv.config();const db=require('./db');
-const app=express();
-const BUILD_VERSION='8.5.0-admin-control-room';app.set('trust proxy',1);app.use(express.json({limit:'3mb'}));app.use(express.urlencoded({extended:true}));app.use(cookieParser());
-app.use('/assets',express.static(path.join(__dirname,'..','assets')));app.use(express.static(path.join(__dirname,'..')));
-app.use('/api/products',require('./routes/products'));app.use('/api/orders',require('./routes/orders'));app.use('/api/crypto',require('./routes/crypto').router);app.use('/api/payments',require('./routes/payments'));app.use('/api/messages',require('./routes/messages'));app.use('/api/admin',require('./routes/admin'));app.use('/api/users',require('./routes/users'));app.use('/api/reviews',require('./routes/reviews'));app.use('/api/settings',require('./routes/settings'));app.use('/api/assistant',require('./routes/assistant'));
-const ADMIN_PATH=String(process.env.ADMIN_PATH||'control-room-7x91').replace(/^\/+|\/+$/g,'');app.get('/'+ADMIN_PATH,(req,res)=>res.sendFile(path.join(__dirname,'private-admin.html')));app.get('/admin',(req,res)=>res.status(404).send('Not found'));app.get('/'+ADMIN_PATH+'/',(req,res)=>res.sendFile(path.join(__dirname,'private-admin.html')));
-app.get('/health',(req,res)=>res.json({ok:true,service:'tos-market',build:BUILD_VERSION,payment:'TRX/TRON'}));
-app.get('/api/version',(req,res)=>res.json({build:BUILD_VERSION,payment:'TRX/TRON',wallet:process.env.TRX_PAYMENT_ADDRESS||''}));
-const port=Number(process.env.PORT||3000);(async()=>{try{await db.initDb();app.listen(port,'0.0.0.0',()=>console.log(`TOS MARKET running on ${port}`));}catch(err){console.error('Database initialization failed:',err);process.exit(1);}})();
