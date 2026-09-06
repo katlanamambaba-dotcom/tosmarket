@@ -1,0 +1,138 @@
+const router=require('express').Router();
+const db=require('../db');
+const crypto=require('crypto');
+const multer=require('multer');
+const {adminAuth}=require('../middleware/auth');
+const {userAuth}=require('../middleware/user');
+function mediaUrl(kind,id,version,mime){const mediaType=String(mime||'').startsWith('video/')?'video':'image';return `/api/users/${kind}/${id}?v=${encodeURIComponent(new Date(version||Date.now()).getTime())}&media=${mediaType}`}
+
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024},fileFilter:(req,file,cb)=>cb(null,/^image\/(png|jpe?g|webp|gif)$/i.test(file.mimetype))});
+
+router.post('/guest',upload.single('attachment'),async(req,res)=>{
+  try{
+    const {guestToken,subject='TOS MARKET Destek',body=''}=req.body||{};
+    const clean=String(body).trim();
+    if(!clean && !req.file)return res.status(400).json({error:'Mesaj veya fotoğraf ekle.'});
+    const token=String(guestToken||crypto.randomBytes(24).toString('hex')).slice(0,64);
+    const prior=await db.query('SELECT id FROM messages WHERE guest_token=$1 ORDER BY created_at ASC LIMIT 1',[token]);
+    const threadId=prior.rows[0]?.id||null;
+    const params=[String(subject).slice(0,255),clean.slice(0,5000),threadId,token,req.file?.buffer||null,req.file?.mimetype||null,req.file?.originalname?.slice(0,255)||null];
+    const {rows}=await db.query(`INSERT INTO messages(customer_name,customer_email,subject,body,direction,thread_id,is_read,guest_token,attachment_data,attachment_mime,attachment_name) VALUES('Ziyaretçi',NULL,$1,$2,'inbound',$3,FALSE,$4,$5,$6,$7) RETURNING id`,params);
+    const rootId=threadId||rows[0].id;
+    if(!threadId)await db.query('UPDATE messages SET thread_id=$1 WHERE id=$2',[rootId,rows[0].id]);
+    res.status(201).json({messageId:rows[0].id,guestToken:token,threadId:rootId});
+  }catch(e){console.error('guest message:',e.message);res.status(400).json({error:'Mesaj gönderilemedi.'});}
+});
+
+router.get('/guest',async(req,res)=>{
+  try{const token=String(req.query.token||'');if(!token)return res.status(400).json({error:'Destek anahtarı gerekli.'});
+  const {rows}=await db.query(`SELECT id,subject,body,direction,is_read,created_at,(attachment_data IS NOT NULL) has_attachment,attachment_name FROM messages WHERE guest_token=$1 OR thread_id IN (SELECT id FROM messages WHERE guest_token=$1) ORDER BY created_at ASC`,[token]);
+  await db.query("UPDATE messages SET is_read=TRUE WHERE guest_token=$1 AND direction='outbound'",[token]);
+  res.json({messages:rows});}catch(e){res.status(500).json({error:'Destek geçmişi yüklenemedi.'});}
+});
+
+router.get('/attachment/:id',async(req,res)=>{try{const token=String(req.query.token||'');const {rows}=await db.query('SELECT attachment_data,attachment_mime,attachment_name,guest_token FROM messages WHERE id=$1',[req.params.id]);const m=rows[0];if(!m?.attachment_data)return res.status(404).end();if(!token||m.guest_token!==token)return res.status(403).end();res.type(m.attachment_mime||'application/octet-stream');res.set('Cache-Control','private,max-age=3600');res.send(m.attachment_data);}catch{res.status(404).end();}});
+
+router.post('/',async(req,res)=>{const {name,email,subject,body}=req.body||{};if(!name||!email||!subject||!body)return res.status(400).json({error:'Alanlar zorunlu.'});const {rows}=await db.query('INSERT INTO messages(customer_name,customer_email,subject,body) VALUES($1,$2,$3,$4) RETURNING id',[name.trim(),email.toLowerCase().trim(),subject.trim(),body.trim()]);res.status(201).json({messageId:rows[0].id});});
+
+
+// Authenticated order chat: only the buyer of the order can read/write this thread.
+router.get('/order/:orderId',userAuth,async(req,res)=>{
+  try{
+    const orderId=Number(req.params.orderId);
+    const order=await db.query('SELECT id,customer_nickname,status FROM orders WHERE id=$1 AND user_id=$2',[orderId,req.user.id]);
+    if(!order.rows[0])return res.status(404).json({error:'Sipariş bulunamadı.'});
+    const rows=await db.query(`SELECT id,subject,body,direction,is_read,created_at,order_id,(attachment_data IS NOT NULL) has_attachment,attachment_name FROM messages WHERE user_id=$1 AND order_id=$2 ORDER BY created_at ASC`,[req.user.id,orderId]);
+    await db.query("UPDATE messages SET is_read=TRUE WHERE user_id=$1 AND order_id=$2 AND direction='outbound'",[req.user.id,orderId]);
+    res.json({order:order.rows[0],messages:rows.rows});
+  }catch(e){res.status(500).json({error:'Sipariş mesajları yüklenemedi.'});}
+});
+
+router.post('/order/:orderId',userAuth,async(req,res)=>{
+  try{
+    const orderId=Number(req.params.orderId);const body=String(req.body?.body||'').trim().slice(0,5000);
+    if(!body)return res.status(400).json({error:'Mesaj boş olamaz.'});
+    const order=await db.query('SELECT id,customer_nickname FROM orders WHERE id=$1 AND user_id=$2',[orderId,req.user.id]);
+    if(!order.rows[0])return res.status(404).json({error:'Sipariş bulunamadı.'});
+    const prior=await db.query('SELECT id FROM messages WHERE user_id=$1 AND order_id=$2 ORDER BY created_at ASC LIMIT 1',[req.user.id,orderId]);
+    let threadId=prior.rows[0]?.thread_id||prior.rows[0]?.id||null;
+    if(!threadId){
+      const root=await db.query(`INSERT INTO messages(customer_name,customer_email,subject,body,direction,thread_id,user_id,order_id,is_read) VALUES($1,$2,$3,$4,'inbound',NULL,$5,$6,FALSE) RETURNING id`,[req.user.display_name||req.user.nickname,req.user.email,'Sipariş #'+orderId,body,req.user.id,orderId]);
+      threadId=root.rows[0].id;await db.query('UPDATE messages SET thread_id=$1 WHERE id=$2',[threadId,threadId]);
+      return res.status(201).json({messageId:threadId,threadId});
+    }
+    const r=await db.query(`INSERT INTO messages(customer_name,customer_email,subject,body,direction,thread_id,user_id,order_id,is_read) VALUES($1,$2,$3,$4,'inbound',$5,$6,$7,FALSE) RETURNING id`,[req.user.display_name||req.user.nickname,req.user.email,'Sipariş #'+orderId,body,threadId,req.user.id,orderId]);
+    res.status(201).json({messageId:r.rows[0].id,threadId});
+  }catch(e){console.error('order message:',e.message);res.status(500).json({error:'Mesaj gönderilemedi.'});}
+});
+
+
+// User-to-user in-app messaging.
+router.get('/unread-count',userAuth,async(req,res)=>{
+  try{
+    const {rows}=await db.query(`SELECT COUNT(*)::int AS count FROM messages WHERE recipient_user_id=$1 AND is_read=FALSE`,[req.user.id]);
+    res.json({count:rows[0]?.count||0});
+  }catch(e){res.status(500).json({error:'Mesaj sayısı alınamadı.'});}
+});
+
+router.get('/conversations',userAuth,async(req,res)=>{
+  try{
+    const {rows}=await db.query(`
+      WITH mine AS (
+        SELECT m.*, CASE WHEN m.sender_user_id=$1 THEN m.recipient_user_id ELSE m.sender_user_id END AS other_id
+        FROM messages m
+        WHERE (m.sender_user_id=$1 OR m.recipient_user_id=$1) AND m.thread_id IS NOT NULL
+      ), latest AS (
+        SELECT DISTINCT ON (other_id) other_id,id,body,created_at,is_read,sender_user_id
+        FROM mine ORDER BY other_id,created_at DESC,id DESC
+      ), unread AS (
+        SELECT other_id,COUNT(*)::int AS unread_count FROM mine WHERE recipient_user_id=$1 AND is_read=FALSE GROUP BY other_id
+      )
+      SELECT l.other_id AS user_id,u.nickname,u.display_name,u.avatar_mime,u.updated_at,
+             (u.avatar_data IS NOT NULL) has_avatar,l.id AS last_message_id,l.body AS last_body,l.created_at AS last_created_at,
+             COALESCE(un.unread_count,0) unread_count
+      FROM latest l JOIN users u ON u.id=l.other_id
+      LEFT JOIN unread un ON un.other_id=l.other_id
+      WHERE u.account_status='active'
+      ORDER BY l.created_at DESC,l.id DESC`,[req.user.id]);
+    res.json({conversations:rows.map(x=>({...x,avatar_url:x.has_avatar?mediaUrl('avatar',x.user_id,x.updated_at,x.avatar_mime):null}))});
+  }catch(e){console.error('conversations:',e.message);res.status(500).json({error:'Mesaj kutusu yüklenemedi.'});}
+});
+
+router.get('/user/:userId',userAuth,async(req,res)=>{
+  try{
+    const otherId=Number(req.params.userId);
+    if(!Number.isInteger(otherId)||otherId<=0||otherId===req.user.id)return res.status(400).json({error:'Geçersiz kullanıcı.'});
+    const u=await db.query(`SELECT id,nickname,display_name,avatar_mime,updated_at,(avatar_data IS NOT NULL) has_avatar FROM users WHERE id=$1 AND account_status='active'`,[otherId]);
+    if(!u.rows[0])return res.status(404).json({error:'Kullanıcı bulunamadı.'});
+    const first=await db.query(`SELECT id FROM messages WHERE ((sender_user_id=$1 AND recipient_user_id=$2) OR (sender_user_id=$2 AND recipient_user_id=$1)) AND thread_id IS NOT NULL ORDER BY created_at ASC,id ASC LIMIT 1`,[req.user.id,otherId]);
+    const threadId=first.rows[0]?.id||null;
+    const msgs=threadId?await db.query(`SELECT id,body,sender_user_id,recipient_user_id,is_read,created_at FROM messages WHERE thread_id=$1 ORDER BY created_at ASC,id ASC`,[threadId]):{rows:[]};
+    await db.query(`UPDATE messages SET is_read=TRUE WHERE thread_id=$1 AND recipient_user_id=$2`,[threadId,req.user.id]);
+    const person=u.rows[0];
+    res.json({user:{...person,avatar_url:person.has_avatar?mediaUrl('avatar',person.id,person.updated_at,person.avatar_mime):null},messages:msgs.rows});
+  }catch(e){console.error('user messages:',e.message);res.status(500).json({error:'Sohbet yüklenemedi.'});}
+});
+
+router.post('/user/:userId',userAuth,async(req,res)=>{
+  try{
+    const otherId=Number(req.params.userId);const body=String(req.body?.body||'').trim().slice(0,5000);
+    if(!Number.isInteger(otherId)||otherId<=0||otherId===req.user.id)return res.status(400).json({error:'Geçersiz kullanıcı.'});
+    if(!body)return res.status(400).json({error:'Mesaj boş olamaz.'});
+    const u=await db.query(`SELECT id,nickname,display_name FROM users WHERE id=$1 AND account_status='active'`,[otherId]);
+    if(!u.rows[0])return res.status(404).json({error:'Kullanıcı bulunamadı.'});
+    const first=await db.query(`SELECT id,thread_id FROM messages WHERE ((sender_user_id=$1 AND recipient_user_id=$2) OR (sender_user_id=$2 AND recipient_user_id=$1)) AND thread_id IS NOT NULL ORDER BY created_at ASC,id ASC LIMIT 1`,[req.user.id,otherId]);
+    let threadId=first.rows[0]?.thread_id||first.rows[0]?.id||null;
+    const params=[req.user.display_name||req.user.nickname,req.user.email,'Kullanıcı mesajı',body,threadId,req.user.id,otherId];
+    const r=await db.query(`INSERT INTO messages(customer_name,customer_email,subject,body,direction,thread_id,is_read,user_id,sender_user_id,recipient_user_id) VALUES($1,$2,$3,$4,'inbound',$5,FALSE,$6,$6,$7) RETURNING id,created_at`,params);
+    if(!threadId){threadId=r.rows[0].id;await db.query('UPDATE messages SET thread_id=$1 WHERE id=$2',[threadId,r.rows[0].id]);}
+    res.status(201).json({messageId:r.rows[0].id,threadId,created_at:r.rows[0].created_at});
+  }catch(e){console.error('send user message:',e.message);res.status(500).json({error:'Mesaj gönderilemedi.'});}
+});
+
+router.get('/admin/inbox',adminAuth,async(req,res)=>{const {rows}=await db.query('SELECT id,customer_name,customer_email,subject,body,direction,thread_id,is_read,guest_token,created_at,(attachment_data IS NOT NULL) has_attachment,attachment_name,attachment_mime FROM messages ORDER BY created_at DESC');res.json({messages:rows});});
+router.get('/admin/attachment/:id',adminAuth,async(req,res)=>{const {rows}=await db.query('SELECT attachment_data,attachment_mime FROM messages WHERE id=$1',[req.params.id]);const m=rows[0];if(!m?.attachment_data)return res.status(404).end();res.type(m.attachment_mime||'application/octet-stream');res.set('Cache-Control','private,max-age=3600');res.send(m.attachment_data);});
+
+router.post('/admin/reply',adminAuth,async(req,res)=>{const {threadId,email,subject,body,guestToken}=req.body||{};if(!body)return res.status(400).json({error:'Cevap boş olamaz.'});let token=guestToken||null,userId=null,orderId=null,customerEmail=email?email.trim():null;if(threadId){const r=await db.query('SELECT guest_token,user_id,order_id,customer_email FROM messages WHERE id=$1',[threadId]);const t=r.rows[0];token=token||t?.guest_token||null;userId=t?.user_id||null;orderId=t?.order_id||null;customerEmail=customerEmail||t?.customer_email||null;}const {rows}=await db.query(`INSERT INTO messages(customer_name,customer_email,subject,body,direction,thread_id,is_read,guest_token,user_id,order_id) VALUES('TOS MARKET',$1,$2,$3,'outbound',$4,TRUE,$5,$6,$7) RETURNING id`,[customerEmail,subject||'TOS MARKET Destek',body.trim(),threadId||null,token,userId,orderId]);res.json({messageId:rows[0].id,sent:false});});
+router.patch('/admin/read/:id',adminAuth,async(req,res)=>{await db.query('UPDATE messages SET is_read=TRUE WHERE id=$1',[req.params.id]);res.json({ok:true});});
+module.exports=router;
