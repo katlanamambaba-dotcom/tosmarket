@@ -1,0 +1,26 @@
+# TOS MARKET 8.8 Stable
+
+Root-ready production package.
+
+## Included
+- Turkish/English storefront
+- Account registration/login/logout
+- Secure bcrypt password storage (passwords are never shown to admins)
+- Account, profile, avatar/cover, social links
+- TRX / TRON payments
+- Orders and delivery
+- Buyer ↔ TOS MARKET order messaging
+- Admin inbox, users, orders, supplier source, payment notifications
+- Auth/order activity logs
+- No email verification
+- No password reset by email
+
+## Render
+- Root Directory: leave blank when these files are at repository root
+- Build Command: `npm install`
+- Start Command: `npm start`
+
+If JWT_SECRET is missing on an existing service, the server persists a generated signing secret in `site_settings` so login remains functional across restarts.
+
+## Product sourcing
+Admin can fill `Tedarik kaynağı / iç not` while creating/editing a product. It is private to admin and appears with the order item in the admin order screen.
