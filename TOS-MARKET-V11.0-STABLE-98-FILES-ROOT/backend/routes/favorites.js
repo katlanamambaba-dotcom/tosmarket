@@ -1,0 +1,6 @@
+const router=require('express').Router();const db=require('../db');const {userAuth}=require('../middleware/user');
+router.get('/',userAuth,async(req,res)=>{const {rows}=await db.query(`SELECT p.id,p.name,p.description,p.category,p.price,p.stock,p.image_url,(p.image_data IS NOT NULL) has_image FROM favorites f JOIN products p ON p.id=f.product_id WHERE f.user_id=$1 ORDER BY f.created_at DESC`,[req.user.id]);res.json({favorites:rows.map(p=>({...p,price:Number(p.price),image_url:p.has_image?`/api/products/${p.id}/image`:p.image_url}))});});
+router.post('/:productId',userAuth,async(req,res)=>{await db.query('INSERT INTO favorites(user_id,product_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[req.user.id,req.params.productId]);res.json({ok:true});});
+router.delete('/:productId',userAuth,async(req,res)=>{await db.query('DELETE FROM favorites WHERE user_id=$1 AND product_id=$2',[req.user.id,req.params.productId]);res.json({ok:true});});
+router.get('/check/:productId',userAuth,async(req,res)=>{const r=await db.query('SELECT 1 FROM favorites WHERE user_id=$1 AND product_id=$2',[req.user.id,req.params.productId]);res.json({favorite:!!r.rows[0]});});
+module.exports=router;
