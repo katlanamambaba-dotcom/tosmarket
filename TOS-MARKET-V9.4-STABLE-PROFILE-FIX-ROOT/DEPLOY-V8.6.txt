@@ -1,5 +1,0 @@
-TOS MARKET V8.7 FINAL
-Render Root Directory: BLANK
-Build: npm install
-Start: npm start
-Health: /health
